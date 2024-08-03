@@ -53,4 +53,4 @@ Contributions to enhance the forecasting models or extend the dataset are welcom
 3. Make your changes.
 4. Submit a pull request.
 ## License
-This project is licensed under the MIT License - see the LICENSE.md file for details.
+This project is licensed under the MIT License - see the [LICENSE.md](https://github.com/bhowad-akash/Jakarta-Ambulance-Demand-Forecasting-System/blob/main/LICENSE) file for details.
