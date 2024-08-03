@@ -1,0 +1,520 @@
+
+from google.colab import drive
+drive.mount('/content/drive')
+
+import pandas as pd
+import numpy as np
+import matplotlib.pyplot as plt
+# %matplotlib inline
+from matplotlib.pylab import rcParams
+rcParams['figure.figsize'] = 14, 5
+import seaborn as sns
+from datetime import datetime
+from math import sqrt
+from statsmodels.tsa.seasonal import seasonal_decompose
+from statsmodels.tsa.stattools import adfuller
+from statsmodels.tsa.stattools import kpss
+from sklearn.metrics import mean_absolute_error, mean_squared_error
+from sklearn.linear_model import LinearRegression
+from statsmodels.tsa.holtwinters import SimpleExpSmoothing
+from statsmodels.tsa.holtwinters import ExponentialSmoothing
+from statsmodels.graphics.tsaplots import plot_acf, plot_pacf
+from statsmodels.tsa.arima.model import ARIMA
+from statsmodels.tsa.statespace.sarimax import SARIMAX
+
+dataset = pd.read_csv('/content/drive/MyDrive/Time Series Forecasting/coursework_data.csv')
+dataset.head(5)
+
+"""# Numerical Summaries"""
+
+dataset['Call_Date'] = pd.to_datetime(dataset['Call_Date'], format='%d/%m/%Y %H:%M:%S')
+
+total_calls = len(dataset)
+avg_per_day_calls = dataset['Call_Date'].dt.date.value_counts().mean()
+
+dataset['Hour'] = dataset['Call_Date'].dt.hour
+most_active_calling_hour = dataset['Hour'].value_counts().idxmax()
+
+daily_calls_statistics = dataset['Call_Date'].dt.date.value_counts().describe()
+
+daily_calls = dataset['Call_Date'].dt.date.value_counts()
+daily_calls_mad = (daily_calls - daily_calls.mean()).abs().mean()
+
+print("Total Number of Calls:", total_calls)
+print("\nAverage Calls Per Day:", avg_per_day_calls)
+print("\nMost Active Calling Hour:", most_active_calling_hour)
+print("\nMean Absolute Deviation of Daily Calls:", daily_calls_mad)
+print("\nDescriptive Statistics for Daily Calls:\n", daily_calls_statistics)
+
+"""# Graphical Summaries"""
+
+hourly_call_volume = dataset.groupby('Hour').size()
+plt.plot(hourly_call_volume.index, hourly_call_volume, marker='o', linestyle='-', color='brown')
+plt.title('Hourly Call Volume')
+plt.xlabel('Hour of the Day')
+plt.ylabel('Number of Calls')
+plt.tight_layout()
+plt.show()
+
+dataset['Day_of_Week'] = dataset['Call_Date'].dt.day_name()
+day_of_week_calls = dataset.groupby('Day_of_Week').size().reindex([
+    "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"
+])
+
+plt.bar(day_of_week_calls.index, day_of_week_calls, color='grey')
+plt.title('Call Volume by Day of the Week')
+plt.xlabel('Day of the Week')
+plt.ylabel('Number of Calls')
+plt.tight_layout()
+plt.show()
+
+dataset['Month'] = dataset['Call_Date'].dt.to_period('M')
+monthly_call_volume = dataset.groupby('Month').size()
+
+plt.plot(monthly_call_volume.index.astype(str), monthly_call_volume, marker='o', linestyle='-', color='blue')
+plt.title('Monthly Call Volume')
+plt.xlabel('Month')
+plt.ylabel('Number of Calls')
+plt.xticks(rotation=45)
+plt.tight_layout()
+plt.show()
+
+dataset['Month_Period'] = pd.cut(dataset['Call_Date'].dt.day, bins=[0, 10, 20, 31], right=False, labels=['Beginning', 'Middle', 'End'])
+calls_by_month_period = dataset.groupby('Month_Period').size()
+
+fig, ax = plt.subplots()
+ax.pie(calls_by_month_period, labels=calls_by_month_period.index, autopct='%1.1f%%', startangle=90, colors=['#ff9999','#66b3ff','#99ff99'])
+centre_circle = plt.Circle((0,0),0.70,fc='white')
+fig = plt.gcf()
+fig.gca().add_artist(centre_circle)
+ax.axis('equal')
+plt.title('Call Volume by Period of the Month')
+plt.tight_layout()
+plt.show()
+
+call_frequency = dataset.pivot_table(index='Day_of_Week', columns='Hour', values='Call_Date', aggfunc='count', fill_value=0)
+call_frequency = call_frequency.reindex(["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"])
+sns.heatmap(call_frequency, cmap='viridis', annot=True, fmt='d')
+plt.title('Heatmap of Call Frequency by Hour and Day of the Week')
+plt.xlabel('Hour of the Day')
+plt.ylabel('Day of the Week')
+plt.tight_layout()
+plt.show()
+
+dataset['Emergency_Call_Date'] = pd.to_datetime(dataset['Call_Date'], dayfirst=True).dt.date
+dataset['Emergency_Call_time'] = pd.to_datetime(dataset['Call_Date'], dayfirst=True).dt.time
+dataset.drop(['Call_Date', 'Hour', 'Day_of_Week', 'Month', 'Month_Period'], axis = 1, inplace = True)
+dataset.head(5)
+
+emergency_calls = dataset.groupby('Emergency_Call_Date').size().reset_index(name='Total_Emergency_Calls')
+emergency_calls.set_index('Emergency_Call_Date', inplace = True)
+emergency_calls.head(5)
+
+plt.plot(emergency_calls.index, emergency_calls['Total_Emergency_Calls'], color='teal')
+plt.xlabel('Date')
+plt.title('Daily Call Volume Time Series Plot')
+plt.tight_layout()
+plt.xticks(rotation=45)
+
+emergency_calls = emergency_calls.asfreq('D')
+
+additive_decompose = seasonal_decompose(emergency_calls['Total_Emergency_Calls'], model='additive')
+fig = additive_decompose.plot()
+fig.suptitle('Additive Decomposition Plot', fontsize=16)
+plt.tight_layout()
+plt.subplots_adjust(top=0.9)
+plt.show()
+
+multiplicative_decompose = seasonal_decompose(emergency_calls['Total_Emergency_Calls'], model='multiplicative')
+fig = multiplicative_decompose.plot()
+fig.suptitle('Multiplicative Decomposition Plot', fontsize=16)
+plt.tight_layout()
+plt.subplots_adjust(top=0.9)
+plt.show()
+
+#ADF Test to check if the data is stationary
+df_test = adfuller(emergency_calls['Total_Emergency_Calls'], autolag='AIC')
+
+dfoutput = pd.Series(df_test[0:4], index=['Test Statistic', 'p-value', 'No. of Lags used', 'No. of observations used'])
+for key, value in df_test[4].items():
+  dfoutput['Critical Value (%s)' %key] = value
+
+print(dfoutput)
+
+#KPSS Test to check if the data is stationary
+kpss_test = kpss(emergency_calls['Total_Emergency_Calls'], regression='c')
+
+kpss_output = pd.Series(kpss_test[0:3], index=['Test Statistic', 'p-value', 'Lags Used'])
+for key, value in kpss_test[3].items():
+    kpss_output['Critical Value (%s)' %key] = value
+
+print(kpss_output)
+
+#First Order differencing to make the data stationary
+emergency_calls['Differenced_Calls'] = emergency_calls['Total_Emergency_Calls'].diff()
+emergency_calls_diff = emergency_calls.dropna()
+print(emergency_calls_diff.head())
+
+#ADF Test to check if the data after first order differenced data is stationary
+df_test_diff = adfuller(emergency_calls_diff['Differenced_Calls'], autolag='AIC')
+
+dfoutput_diff = pd.Series(df_test_diff[0:4], index=['Test Statistic', 'p-value', 'No. of Lags used', 'No. of observations used'])
+for key, value in df_test_diff[4].items():
+  dfoutput_diff['Critical Value (%s)' %key] = value
+
+print(dfoutput_diff)
+
+#KPSS Test to check if the data after first order differenced data is stationary
+kpss_test_diff = kpss(emergency_calls_diff['Differenced_Calls'], regression='c')
+
+kpss_output_diff = pd.Series(kpss_test_diff[0:3], index=['Test Statistic', 'p-value', 'Lags Used'])
+for key, value in kpss_test_diff[3].items():
+    kpss_output_diff['Critical Value (%s)' %key] = value
+
+print(kpss_output_diff)
+
+plt.plot(emergency_calls_diff['Differenced_Calls'], color='maroon')
+plt.title('Stationary Time Series Plot')
+plt.xlabel('Date')
+plt.ylabel('Differenced Emergency Calls')
+plt.xticks(rotation=45)
+plt.tight_layout()
+plt.show()
+
+#Train-test split
+emergency_calls_split = round(len(emergency_calls) * 0.8)
+emergency_calls_train, emergency_calls_test = emergency_calls.iloc[:emergency_calls_split], emergency_calls.iloc[emergency_calls_split:]
+
+"""# **Naive Forecast**"""
+
+naive_forecast = emergency_calls_train.iloc[-1]['Total_Emergency_Calls']
+emergency_calls_test['Naive_Forecast'] = naive_forecast
+
+errors = emergency_calls_test['Total_Emergency_Calls'] - emergency_calls_test['Naive_Forecast']
+naive_me = errors.mean()
+naive_mae = mean_absolute_error(emergency_calls_test['Total_Emergency_Calls'], emergency_calls_test['Naive_Forecast'])
+naive_mse = mean_squared_error(emergency_calls_test['Total_Emergency_Calls'], emergency_calls_test['Naive_Forecast'])
+naive_rmse = sqrt(mean_squared_error(emergency_calls_test['Total_Emergency_Calls'], emergency_calls_test['Naive_Forecast']))
+naive_mpe = (errors / emergency_calls_test['Total_Emergency_Calls']).mean() * 100
+naive_mape = (abs(errors) / emergency_calls_test['Total_Emergency_Calls']).mean() * 100
+
+print('The Error Statistics of the Naive Forecast are:')
+print(f'Mean Error(ME): {naive_me}')
+print(f'Mean Absolute Error(MAE): {naive_mae}')
+print(f'Mean Squared Error(MSE): {naive_mse}')
+print(f'The RMSE: {naive_rmse}')
+print(f'Mean Percentage Error(MPE): {naive_mpe}')
+print(f'Mean Absolute Percentage Error(MAPE): {naive_mape}')
+
+plt.plot(emergency_calls_train.index, emergency_calls_train['Total_Emergency_Calls'], label='Training Data', color='blue')
+plt.plot(emergency_calls_test.index, emergency_calls_test['Total_Emergency_Calls'], label='Actual Values', color='orange')
+plt.plot(emergency_calls_test.index, emergency_calls_test['Naive_Forecast'], label='Naive Forecast', linestyle='--')
+
+plt.title('Naïve Forecast')
+plt.xlabel('Date')
+plt.ylabel('Emergency Calls')
+plt.legend(loc='upper left')
+plt.tight_layout()
+plt.show()
+
+"""# **Moving Average Forecast**"""
+
+size_of_window = 7
+emergency_calls_train['Moving_Average'] = emergency_calls_train['Total_Emergency_Calls'].rolling(window=size_of_window).mean().shift(1)
+moving_average_forecast = emergency_calls_train['Moving_Average'].iloc[-1]
+emergency_calls_test['Moving_Average_Forecast'] = moving_average_forecast
+
+errors = emergency_calls_test['Total_Emergency_Calls'] - emergency_calls_test['Moving_Average_Forecast']
+moving_average_me = errors.mean()
+moving_average_mae = mean_absolute_error(emergency_calls_test['Total_Emergency_Calls'], emergency_calls_test['Moving_Average_Forecast'])
+moving_average_mse = mean_squared_error(emergency_calls_test['Total_Emergency_Calls'], emergency_calls_test['Moving_Average_Forecast'])
+moving_average_rmse = sqrt(moving_average_mse)
+moving_average_mpe = (errors / emergency_calls_test['Total_Emergency_Calls']).mean() * 100
+moving_average_mape = (abs(errors) / emergency_calls_test['Total_Emergency_Calls']).mean() * 100
+
+print('The Error Statistics of the Moving Average Forecasting Model are:')
+print(f'Mean Error (ME): {moving_average_me}')
+print(f'Mean Absolute Error (MAE): {moving_average_mae}')
+print(f'Mean Squared Error (MSE): {moving_average_mse}')
+print(f'Root Mean Squared Error (RMSE): {moving_average_rmse}')
+print(f'Mean Percentage Error (MPE): {moving_average_mpe}')
+print(f'Mean Absolute Percentage Error (MAPE): {moving_average_mape}')
+
+plt.plot(emergency_calls_train.index, emergency_calls_train['Total_Emergency_Calls'], label='Training Data', color='blue')
+plt.plot(emergency_calls_test.index, emergency_calls_test['Total_Emergency_Calls'], label='Actual Values', color='orange')
+plt.plot(emergency_calls_test.index, emergency_calls_test['Moving_Average_Forecast'], label='Moving Average Forecast', linestyle='--')
+
+plt.title('Moving Average Forecast')
+plt.xlabel('Date')
+plt.ylabel('Emergency Calls')
+plt.legend(loc='upper left')
+plt.tight_layout()
+plt.show()
+
+"""# **Simple Linear Regression Forecast**"""
+
+emergency_calls_train['TimeIndex'] = np.arange(len(emergency_calls_train))
+X_train = emergency_calls_train['TimeIndex'].values.reshape(-1, 1)
+y_train = emergency_calls_train['Total_Emergency_Calls'].values
+model = LinearRegression().fit(X_train, y_train)
+
+emergency_calls_test['TimeIndex'] = np.arange(len(emergency_calls_train), len(emergency_calls_train) + len(emergency_calls_test))
+X_test = emergency_calls_test['TimeIndex'].values.reshape(-1, 1)
+y_pred = model.predict(X_test)
+
+lr_mae = mean_absolute_error(emergency_calls_test['Total_Emergency_Calls'], y_pred)
+lr_mse = mean_squared_error(emergency_calls_test['Total_Emergency_Calls'], y_pred)
+lr_rmse = np.sqrt(lr_mse)
+lr_mape = np.mean(np.abs((emergency_calls_test['Total_Emergency_Calls'] - y_pred) / emergency_calls_test['Total_Emergency_Calls'])) * 100
+
+print('The Error Statistics of the Linear Regression Model are:')
+print(f'Mean Absolute Error (MAE): {lr_mae}')
+print(f'Mean Squared Error (MSE): {lr_mse}')
+print(f'Root Mean Squared Error (RMSE): {lr_rmse}')
+print(f'Mean Absolute Percentage Error (MAPE): {lr_mape}%')
+
+plt.plot(emergency_calls_train.index, emergency_calls_train['Total_Emergency_Calls'], label='Training Data', color='blue')
+train_predictions = model.predict(X_train)
+plt.plot(emergency_calls_train.index, train_predictions, label='Linear Regression Fit', color='red')
+plt.plot(emergency_calls_test.index, emergency_calls_test['Total_Emergency_Calls'], label='Actual Values', color='orange')
+plt.plot(emergency_calls_test.index, y_pred, label='Linear Regression Forecast', color='green', linestyle='--')
+plt.legend(loc='best')
+plt.title('Simple Linear Regression Forecast')
+plt.xlabel('Date')
+plt.ylabel('Total Emergency Calls')
+plt.xticks()
+plt.tight_layout()
+plt.show()
+
+"""# **Single Exponential Smoothing**"""
+
+ses_model = SimpleExpSmoothing(emergency_calls_train['Total_Emergency_Calls']).fit(smoothing_level=None, optimized=True)
+ses_forecast = ses_model.forecast(len(emergency_calls_test))
+ses_forecast = pd.Series(ses_forecast, index=emergency_calls_test.index)
+ses_forecast.index = emergency_calls_test.index
+
+ses_me = (emergency_calls_test['Total_Emergency_Calls'] - ses_forecast).mean()
+ses_mae = mean_absolute_error(emergency_calls_test['Total_Emergency_Calls'], ses_forecast)
+ses_mse = mean_squared_error(emergency_calls_test['Total_Emergency_Calls'], ses_forecast)
+ses_rmse = sqrt(mean_squared_error(emergency_calls_test['Total_Emergency_Calls'], ses_forecast))
+ses_mpe = ((emergency_calls_test['Total_Emergency_Calls'] - ses_forecast) / emergency_calls_test['Total_Emergency_Calls']).mean() * 100
+ses_mape = (abs(emergency_calls_test['Total_Emergency_Calls'] - ses_forecast) / emergency_calls_test['Total_Emergency_Calls']).mean() * 100
+ses_aic = ses_model.aic
+ses_bic = ses_model.bic
+
+print('The Error Statistics of the SES Forecast are:')
+print(f'Mean Error (ME): {ses_me}')
+print(f'Mean Absolute Error (MAE): {ses_mae}')
+print(f'Mean Squared Error (MSE): {ses_mse}')
+print(f'Root Mean Squared Error (RMSE): {ses_rmse}')
+print(f'Mean Percentage Error (MPE): {ses_mpe}')
+print(f'Mean Absolute Percentage Error (MAPE): {ses_mape}')
+print(f'AIC: {ses_aic}')
+print(f'BIC: {ses_bic}')
+
+plt.plot(emergency_calls_train['Total_Emergency_Calls'], label='Training Data', color='blue')
+plt.plot(emergency_calls_test['Total_Emergency_Calls'], label='Actual Values', color='orange')
+plt.plot(emergency_calls_test.index, ses_forecast, label='SES Forecast', linestyle='--')
+plt.title('Single Exponential Smoothing Forecast')
+plt.xlabel('Date')
+plt.ylabel('Emergency Calls')
+plt.legend(loc='upper left')
+plt.tight_layout()
+plt.show()
+
+"""# **Holt's Linear Exponential Smoothing**"""
+
+holt_model = ExponentialSmoothing(emergency_calls_train['Total_Emergency_Calls'], trend='add', seasonal=None, damped_trend=False).fit()
+holt_forecast = holt_model.forecast(len(emergency_calls_test))
+
+holt_me = (emergency_calls_test['Total_Emergency_Calls'] - holt_forecast).mean()
+holt_mae = mean_absolute_error(emergency_calls_test['Total_Emergency_Calls'], holt_forecast)
+holt_mse = mean_squared_error(emergency_calls_test['Total_Emergency_Calls'], holt_forecast)
+holt_rmse = sqrt(mean_squared_error(emergency_calls_test['Total_Emergency_Calls'], holt_forecast))
+holt_mpe = ((emergency_calls_test['Total_Emergency_Calls'] - holt_forecast) / emergency_calls_test['Total_Emergency_Calls']).mean() * 100
+holt_mape = (abs(emergency_calls_test['Total_Emergency_Calls'] - holt_forecast) / emergency_calls_test['Total_Emergency_Calls']).mean() * 100
+holt_aic = holt_model.aic
+holt_bic = holt_model.bic
+
+print("The Error Statistics of the Holt's Linear Model are:")
+print(f'Mean Error (ME): {holt_me}')
+print(f'Mean Absolute Error (MAE): {holt_mae}')
+print(f'Mean Squared Error (MSE): {holt_mse}')
+print(f'The RMSE: {holt_rmse}')
+print(f'Mean Percentage Error (MPE): {holt_mpe}')
+print(f'Mean Absolute Percentage Error (MAPE): {holt_mape}')
+print(f'AIC: {holt_aic}')
+print(f'BIC: {holt_bic}')
+
+plt.plot(emergency_calls_train.index, emergency_calls_train['Total_Emergency_Calls'], label='Training Data', color='blue')
+plt.plot(emergency_calls_test.index, emergency_calls_test['Total_Emergency_Calls'], label='Test Data', color='orange')
+plt.plot(emergency_calls_test.index, holt_forecast, label="Holt's Linear Trend Forecast", linestyle='--')
+plt.title("Holt's Linear Forecast")
+plt.xlabel('Date')
+plt.ylabel('Total Emergency Calls')
+plt.legend(loc='upper left')
+plt.tight_layout()
+plt.show()
+
+"""# **Holt Winter's Seasonal Forecast**"""
+
+hw_model = ExponentialSmoothing(
+    emergency_calls_train['Total_Emergency_Calls'],
+    trend='add',
+    seasonal='add',
+    seasonal_periods=7,
+    damped_trend = False,
+    initialization_method="estimated"
+).fit()
+
+hw_forecast = hw_model.forecast(len(emergency_calls_test))
+
+hw_me = (emergency_calls_test['Total_Emergency_Calls'] - hw_forecast).mean()
+hw_mae = mean_absolute_error(emergency_calls_test['Total_Emergency_Calls'], hw_forecast)
+hw_mse = mean_squared_error(emergency_calls_test['Total_Emergency_Calls'], hw_forecast)
+hw_rmse = sqrt(mean_squared_error(emergency_calls_test['Total_Emergency_Calls'], hw_forecast))
+hw_mpe = ((emergency_calls_test['Total_Emergency_Calls'] - hw_forecast) / emergency_calls_test['Total_Emergency_Calls']).mean() * 100
+hw_mape = (abs(emergency_calls_test['Total_Emergency_Calls'] - hw_forecast) / emergency_calls_test['Total_Emergency_Calls']).mean() * 100
+hw_aic = hw_model.aic
+hw_bic = hw_model.bic
+
+print('The Error Statistics of the Holt-Winters Model are:')
+print(f'Mean Error (ME): {hw_me}')
+print(f'Mean Absolute Error (MAE): {hw_mae}')
+print(f'Mean Squared Error (MSE): {hw_mse}')
+print(f'The RMSE: {hw_rmse}')
+print(f'Mean Percentage Error (MPE): {hw_mpe}')
+print(f'Mean Absolute Percentage Error (MAPE): {hw_mape}')
+print(f'AIC: {hw_aic}')
+print(f'BIC: {hw_bic}')
+
+plt.plot(emergency_calls_train.index, emergency_calls_train['Total_Emergency_Calls'], label='Training Data', color='blue')
+plt.plot(emergency_calls_test.index, emergency_calls_test['Total_Emergency_Calls'], label='Actual Values', color='orange')
+plt.plot(emergency_calls_test.index, hw_forecast, label='HW Forecast', color='green', linestyle='--')
+plt.legend(loc='upper left')
+plt.title('Holt-Winters Forecast')
+plt.tight_layout()
+plt.show()
+
+"""# **ARIMA**"""
+
+plot_acf(emergency_calls_diff['Differenced_Calls'], lags = 40, color='orchid')
+plt.title('ACF Plot')
+plt.tight_layout()
+plt.show()
+
+plot_pacf(emergency_calls_diff['Differenced_Calls'], lags = 40, color='coral')
+plt.title('PACF Plot')
+plt.tight_layout()
+plt.show()
+
+arima_model = ARIMA(emergency_calls_train['Total_Emergency_Calls'], order=(6,1,5))
+arima_model_fit = arima_model.fit()
+
+arima_forecast = arima_model_fit.get_forecast(steps=len(emergency_calls_test))
+forecast_index = emergency_calls_test.index
+forecast_mean = arima_forecast.predicted_mean
+forecast_ci = arima_forecast.conf_int()
+
+arima_me = (emergency_calls_test['Total_Emergency_Calls'] - forecast_mean).mean()
+arima_mae = mean_absolute_error(emergency_calls_test['Total_Emergency_Calls'], forecast_mean)
+arima_mse = mean_squared_error(emergency_calls_test['Total_Emergency_Calls'], forecast_mean)
+arima_rmse = arima_mse**0.5
+arima_mape = np.mean(np.abs((emergency_calls_test['Total_Emergency_Calls'] - forecast_mean) / emergency_calls_test['Total_Emergency_Calls'])) * 100
+arima_aic = arima_model_fit.aic
+arima_bic = arima_model_fit.bic
+
+print('The Error Statistics of the ARIMA Forecast Model are:')
+print(f'Mean Error (ME): {arima_me}')
+print(f'Mean Absolute Error (MAE): {arima_mae}')
+print(f'Mean Squared Error (MSE): {arima_mse}')
+print(f'Root Mean Squared Error (RMSE): {arima_rmse}')
+print(f'Mean Absolute Percentage Error (MAPE) for ARIMA: {arima_mape}%')
+print(f'AIC: {arima_aic}')
+print(f'BIC: {arima_bic}')
+
+plt.plot(emergency_calls_train.index, emergency_calls_train['Total_Emergency_Calls'], label='Training Data', color='blue')
+plt.plot(forecast_index, emergency_calls_test['Total_Emergency_Calls'], label='Actual Values', color='orange')
+plt.plot(forecast_index, forecast_mean, label='ARIMA Forecast', color='green', linestyle='--')
+plt.fill_between(forecast_index, forecast_ci.iloc[:, 0], forecast_ci.iloc[:, 1], color='lightgreen', alpha=0.5)
+plt.legend(loc='upper left')
+plt.title('ARIMA Forecast')
+plt.xlabel('Date')
+plt.ylabel('Total Emergency Calls')
+plt.tight_layout()
+plt.show()
+
+"""# **SARIMA**"""
+
+sarima_model = SARIMAX(emergency_calls_train['Total_Emergency_Calls'],
+                       order=(6,0,2),
+                       seasonal_order=(2,1,5,7))
+sarima_model_fit = sarima_model.fit()
+
+sarima_forecast = sarima_model_fit.get_forecast(steps=len(emergency_calls_test))
+forecast_index = emergency_calls_test.index
+forecast_mean = sarima_forecast.predicted_mean
+forecast_ci = sarima_forecast.conf_int()
+
+sarima_me = (emergency_calls_test['Total_Emergency_Calls'] - forecast_mean).mean()
+sarima_mae = mean_absolute_error(emergency_calls_test['Total_Emergency_Calls'], forecast_mean)
+sarima_mse = mean_squared_error(emergency_calls_test['Total_Emergency_Calls'], forecast_mean)
+sarima_rmse = sarima_mse**0.5
+sarima_mape = np.mean(np.abs((emergency_calls_test['Total_Emergency_Calls'] - forecast_mean) / emergency_calls_test['Total_Emergency_Calls'])) * 100
+sarima_aic = sarima_model_fit.aic
+sarima_bic = sarima_model_fit.bic
+
+print('The Error Statistics of the SARIMA Forecast Model are:')
+print(f'Mean Error (ME): {sarima_me}')
+print(f'Mean Absolute Error (MAE): {sarima_mae}')
+print(f'Mean Squared Error (MSE): {sarima_mse}')
+print(f'Root Mean Squared Error (RMSE): {sarima_rmse}')
+print(f'AIC: {sarima_aic}')
+print(f'BIC: {sarima_bic}')
+print(f'Mean Absolute Percentage Error (MAPE) for SARIMA: {sarima_mape}%')
+
+plt.plot(emergency_calls_train.index, emergency_calls_train['Total_Emergency_Calls'], label='Training Data', color='blue')
+plt.plot(emergency_calls_test.index, emergency_calls_test['Total_Emergency_Calls'], label='Actual Values', color='orange')
+plt.plot(forecast_index, forecast_mean, label='SARIMA Forecast', color='green', linestyle='--')
+plt.fill_between(forecast_index, forecast_ci.iloc[:, 0], forecast_ci.iloc[:, 1], color='lightgreen', alpha=0.5)
+
+plt.legend(loc='upper left')
+plt.title('SARIMA Forecast')
+plt.xlabel('Date')
+plt.ylabel('Total Emergency Calls')
+plt.tight_layout()
+plt.show()
+
+"""# **Future Forecast using SARIMA**"""
+
+retrained_sarima_model = SARIMAX(emergency_calls['Total_Emergency_Calls'],
+                            order=(6,1,5),
+                            seasonal_order=(2,0,2,7))
+
+retrained_sarima_model_fit = retrained_sarima_model.fit()
+
+number_of_days = 61
+future_forecast = retrained_sarima_model_fit.get_forecast(steps=number_of_days)
+future_forecast_index = pd.date_range(start=emergency_calls.index[-1] + pd.Timedelta(days=1),
+                                      periods=number_of_days, freq='D')
+future_forecast_mean = future_forecast.predicted_mean
+future_forecast_ci = future_forecast.conf_int()
+
+plt.plot(emergency_calls.index, emergency_calls['Total_Emergency_Calls'], label='Historical Data', color='blue')
+plt.plot(future_forecast_index, future_forecast_mean, label='Future Forecast', color='red', linestyle='--')
+plt.fill_between(future_forecast_index,
+                 future_forecast_ci.iloc[:, 0],
+                 future_forecast_ci.iloc[:, 1],
+                 color='lightgreen', alpha=0.5)
+plt.legend(loc='upper left')
+plt.title('2 Months Forecast')
+plt.xlabel('Date')
+plt.ylabel('Total Emergency Calls')
+plt.tight_layout()
+plt.show()
+
+forecast_data = pd.DataFrame({
+    'Forecasted Mean': future_forecast_mean
+}, index=future_forecast_index)
+
+forecast_data.to_csv('Future Forecast Values.csv',sep=',')
